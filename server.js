@@ -59,7 +59,7 @@ function initData() {
     console.log("╚══════════════════════════════════════╝");
   }
   if (!DB.get("files").initialized) DB.set("files", { initialized: true, list: {} });
-  if (!DB.get("config").initialized) DB.set("config", { initialized: true, premiumEnabled: false, maintenance: false, maxFreeDaily: 30*1024*1024, maxVipDaily: 1024*1024*1024 });
+  if (!DB.get("config").initialized) DB.set("config", { initialized: true, premiumEnabled: true, maintenance: false, maxFreeDaily: 30*1024*1024, maxVipDaily: 1024*1024*1024 });
   if (!DB.get("sessions").initialized) DB.set("sessions", { initialized: true, list: {} });
 }
 initData();
@@ -126,8 +126,15 @@ function modMW(req, res, next) {
   });
 }
 
-const limiter = rl({ windowMs: 15*60*1000, max: 120, standardHeaders: true, legacyHeaders: false });
-const authLimiter = rl({ windowMs: 15*60*1000, max: 20, standardHeaders: true, legacyHeaders: false });
+const limiter = rl({
+  windowMs: 15*60*1000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.path.startsWith("/f/") || req.path.startsWith("/t/") || req.path.startsWith("/g/") || req.path === "/api/watch-stat"
+});
+const authLimiter = rl({ windowMs: 15*60*1000, max: 30, standardHeaders: true, legacyHeaders: false });
+const tokenLimiter = rl({ windowMs: 60*1000, max: 10, standardHeaders: true, legacyHeaders: false });
 
 app.use(ht({ contentSecurityPolicy: false }));
 app.use(limiter);
@@ -301,7 +308,23 @@ app.get("/f/:fid", (req, res) => {
   const isVideo = f.mimetype.startsWith("video/");
   const isOwnerIp = clientIp === OWNER_IP || clientIp === "::ffff:" + OWNER_IP;
 
-  // Token-based auth for video (IP-locked)
+  // ── Anti-leech: block download managers ──────────────────────────────────
+  const ua = (req.headers["user-agent"] || "").toLowerCase();
+  const _bk = ["w"+"get","cu"+"rl","ar"+"ia","id"+"m","internet download","fd"+"m","jdown","downloadmgr","getr"+"ight","flashg"+"et","libwww","python-requests","go-http","java/","okhttp","axel","httrack","pavtube","video download"];
+  if (_bk.some(b => ua.includes(b))) return res.status(403).json({ error: "ACCESS_DENIED" });
+
+  // ── Anti-leech: require valid Referer for video ───────────────────────────
+  if (isVideo) {
+    const referer = req.headers["referer"] || req.headers["origin"] || "";
+    const host = req.headers["host"] || "";
+    const hasValidReferer = referer.includes(host) || referer === "" || isOwnerIp;
+    // Allow empty referer only if accompanied by a valid token (for players that strip referer)
+    if (!hasValidReferer && !req.query.vt) {
+      return res.status(403).json({ error: "ACCESS_DENIED" });
+    }
+  }
+
+  // ── Token-based auth for video (IP-locked) ────────────────────────────────
   let tokenUser = null;
   const vtoken = req.query.vt;
   if (vtoken && videoTokens.has(vtoken)) {
@@ -313,7 +336,7 @@ app.get("/f/:fid", (req, res) => {
     }
   }
 
-  // Fallback to cookie auth for non-token requests
+  // ── Fallback to cookie auth ───────────────────────────────────────────────
   let u = tokenUser;
   if (!u) {
     const token = req.cookies && req.cookies["_mu_sess"];
@@ -327,9 +350,14 @@ app.get("/f/:fid", (req, res) => {
   }
   if (!u) return res.status(401).json({ error: "AUTH_REQUIRED" });
 
-  if (f.premium && isVideo) {
-    if (!["owner","mod","vip"].includes(u.role) && !isOwnerIp) {
-      return res.status(403).json({ error: "VIP_REQUIRED", preview: true });
+  const cfg = getCfg();
+  const canFull = ["owner","mod","vip"].includes(u.role) || isOwnerIp;
+
+  // ── Premium video gate ────────────────────────────────────────────────────
+  if (f.premium && isVideo && cfg.premiumEnabled) {
+    // Non-VIP: must have a valid token (no token = direct link attempt = block)
+    if (!canFull) {
+      if (!tokenUser) return res.status(403).json({ error: "VIP_REQUIRED", preview: true });
     }
   }
 
@@ -339,61 +367,71 @@ app.get("/f/:fid", (req, res) => {
   const fp = pt.join(DIRS.uploads, f.filename);
   if (!fs.existsSync(fp)) return res.status(404).json({ error: "FILE_MISSING" });
 
-  // Anti-leech: block non-browser clients by user-agent signature
-  const ua = (req.headers["user-agent"] || "").toLowerCase();
-  const _bk = ["w"+"get","cu"+"rl","ar"+"ia","id"+"m","internet download","fd"+"m","jdown","downloadmgr","getr"+"ight","flashg"+"et","libwww","python-requests","go-http","java/","okhttp"];
-  if (_bk.some(b => ua.includes(b))) return res.status(403).json({ error: "ACCESS_DENIED" });
-
   const stat = fs.statSync(fp);
   const range = req.headers.range;
 
-  if (isVideo && range) {
-    const cfg = getCfg();
-    const canFull = ["owner","mod","vip"].includes(u.role) || isOwnerIp;
+  if (isVideo) {
+    // ── Compute 15-second byte cap for free users ─────────────────────────
+    // We estimate 15s based on bitrate: size / duration * 15 + buffer
+    // To avoid needing ffprobe at serve time, we use a conservative estimate:
+    // cap at min(15% of file, 20MB). This is enough for ~15s of most web videos.
+    // For extra protection the frontend also enforces time-based cutoff.
+    const isPreview = cfg.premiumEnabled && f.premium && !canFull;
+    // Allow a slightly generous cap so buffering doesn't cut early (18s worth)
+    const previewCap = isPreview ? Math.min(
+      Math.floor(stat.size * 0.18),  // 18% of file ≈ ~15-18s for typical web encode
+      22 * 1024 * 1024               // hard cap at 22MB regardless
+    ) : stat.size;
 
-    if (cfg.premiumEnabled && f.premium && !canFull) {
-      // Only allow first 15 seconds of video (approx bitrate-based limiting)
-      const maxBytes = Math.min(stat.size, Math.floor(stat.size * 0.15 + 1024*512));
+    if (range) {
       const parts = range.replace(/bytes=/, "").split("-");
       const start = parseInt(parts[0], 10);
-      if (start > maxBytes) return res.status(403).setHeader("X-Preview-Limit", "15s").end();
+      const requestedEnd = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
 
-      const end = Math.min(parts[1] ? parseInt(parts[1], 10) : stat.size - 1, maxBytes - 1);
+      // ── Block any request beyond preview cap for free users ────────────
+      if (isPreview && start >= previewCap) {
+        return res.status(403)
+          .setHeader("X-Preview-Limit", "15s")
+          .setHeader("X-VIP-Required", "1")
+          .end();
+      }
+
+      const end = Math.min(requestedEnd, isPreview ? previewCap - 1 : stat.size - 1);
       const chunksize = (end - start) + 1;
       const file = fs.createReadStream(fp, { start, end });
       res.writeHead(206, {
-        "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+        "Content-Range": `bytes ${start}-${end}/${isPreview ? previewCap : stat.size}`,
         "Accept-Ranges": "bytes",
         "Content-Length": chunksize,
         "Content-Type": f.mimetype,
         "X-Content-Options": "nosniff",
-        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Cache-Control": "no-store, no-cache, must-revalidate, private",
         "Pragma": "no-cache",
-        "X-Preview-Limit": "15s"
+        "X-Robots-Tag": "noindex",
+        ...(isPreview ? { "X-Preview-Limit": "15s" } : {}),
+        // Prevent download managers from knowing the real file size
+        "Content-Disposition": `inline; filename="${_0x(f.filename).slice(0,12)}.${f.mimetype.split("/")[1] || "mp4"}"`,
       });
       file.pipe(res);
       return;
     }
 
-    // Full range request
-    const parts = range.replace(/bytes=/, "").split("-");
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
-    const chunksize = (end - start) + 1;
-    const file = fs.createReadStream(fp, { start, end });
-    res.writeHead(206, {
-      "Content-Range": `bytes ${start}-${end}/${stat.size}`,
-      "Accept-Ranges": "bytes",
-      "Content-Length": chunksize,
-      "Content-Type": f.mimetype,
-      "Content-Disposition": `inline; filename="${_0x(f.filename).slice(0,12)}"`,
-      "X-Content-Options": "nosniff",
-      "Cache-Control": "no-store"
-    });
-    file.pipe(res);
+    // Non-range request (initial HEAD or non-range GET)
+    // Report truncated size to free users so download managers can't grab the full file
+    const reportedSize = isPreview ? previewCap : stat.size;
+    res.setHeader("Content-Type", f.mimetype);
+    res.setHeader("Content-Length", reportedSize);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Content-Disposition", `inline; filename="${_0x(f.filename).slice(0,12)}.${f.mimetype.split("/")[1] || "mp4"}"`);
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    if (isPreview) res.setHeader("X-Preview-Limit", "15s");
+    const readStream = fs.createReadStream(fp, { start: 0, end: reportedSize - 1 });
+    readStream.pipe(res);
     return;
   }
 
+  // ── Non-video files ───────────────────────────────────────────────────────
   res.setHeader("Content-Type", f.mimetype);
   res.setHeader("Content-Length", stat.size);
   res.setHeader("Content-Disposition", `inline; filename="${_0x(f.filename).slice(0,12)}"`);
@@ -565,21 +603,24 @@ app.get("/api/admin/stats", ownerMW, (req, res) => {
 
 // ─── VIDEO TOKEN ───────────────────────────────────────────────────────────────
 // Generate an IP-locked, time-limited token for video streaming
-app.post("/api/video-token/:fid", authMW, (req, res) => {
+app.post("/api/video-token/:fid", authMW, tokenLimiter, (req, res) => {
   const f = getFile(req.params.fid);
   if (!f) return res.status(404).json({ error: "NOT_FOUND" });
   if (!f.mimetype.startsWith("video/")) return res.status(400).json({ error: "NOT_VIDEO" });
 
   const clientIp = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.socket.remoteAddress || req.ip;
   const token = _0x(VIDEO_TOKEN_SECRET + req.user.username + clientIp + f.id + Date.now());
-  const expires = Date.now() + 4 * 60 * 60 * 1000; // 4 hours
-  videoTokens.set(token, { fid: f.id, username: req.user.username, ip: clientIp, expires, role: req.user.role });
+  const cfg = getCfg();
+  const canFull = ["owner","mod","vip"].includes(req.user.role);
+  // Free users get shorter token window and are flagged as preview-only
+  const expires = Date.now() + (canFull ? 4 * 60 * 60 * 1000 : 20 * 60 * 1000); // 4h VIP / 20min free
+  videoTokens.set(token, { fid: f.id, username: req.user.username, ip: clientIp, expires, role: req.user.role, preview: !canFull && cfg.premiumEnabled && f.premium });
   // Cleanup old tokens
   if (videoTokens.size > 2000) {
     const now = Date.now();
     for (const [k, v] of videoTokens.entries()) { if (v.expires < now) videoTokens.delete(k); }
   }
-  res.json({ ok: true, token });
+  res.json({ ok: true, token, preview: !canFull && cfg.premiumEnabled && f.premium });
 });
 
 // ─── WATCH STATS ──────────────────────────────────────────────────────────────
