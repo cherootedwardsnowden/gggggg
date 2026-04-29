@@ -220,6 +220,12 @@ canvas#admin-heatmap{width:100%;height:40px;display:block;border-radius:2px}
               <p>Click to select or <span>drag & drop</span> your file here</p>
               <small>Images, GIFs, Videos &#8226; Free: 30MB/day &#8226; VIP: 1GB/day</small>
             </div>
+            <!-- File selected preview -->
+            <div id="file-selected-info" style="display:none;margin-top:8px;padding:8px 12px;background:#111;border:1px solid #2a2a2a;border-radius:2px;display:none;align-items:center;justify-content:space-between;gap:8px">
+              <span id="file-selected-name" style="font-size:12px;color:#ccc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+              <span id="file-selected-size" style="font-size:11px;color:#666;flex-shrink:0"></span>
+              <button onclick="clearSelectedFile()" style="background:none;border:none;color:#555;cursor:pointer;font-size:14px;flex-shrink:0;padding:0 4px" title="Clear">&#10005;</button>
+            </div>
             <input type="file" id="file-input" accept="image/*,video/*" onchange="handleFile(this.files[0])">
             <!-- Premium toggle: always visible, disabled for non-video / when premium mode off -->
             <div style="margin-top:10px;padding:10px 12px;background:#161616;border:1px solid #2a2a2a;border-radius:2px;display:flex;align-items:center;justify-content:space-between;gap:12px">
@@ -235,7 +241,11 @@ canvas#admin-heatmap{width:100%;height:40px;display:block;border-radius:2px}
                 <span id="prem-switch-txt" style="font-size:11px;color:#555;white-space:nowrap">Off</span>
               </label>
             </div>
-            <div id="prog-wrap">
+            <!-- Upload button: only shown after file selected -->
+            <div id="upload-btn-wrap" style="display:none;margin-top:10px">
+              <button class="btn btn-red" onclick="startUpload()" style="width:100%;padding:9px;font-size:13px">&#8679; Upload File</button>
+            </div>
+            <div id="prog-wrap" style="display:none;margin-top:12px">
               <div class="prog-bar"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
               <div id="prog-text">Uploading... 0%</div>
             </div>
@@ -299,6 +309,12 @@ canvas#admin-heatmap{width:100%;height:40px;display:block;border-radius:2px}
           <p>Click to select or <span style="color:var(--red)">drag & drop</span> your file</p>
           <small style="color:#555;display:block;margin-top:5px">Images, GIFs, Videos supported</small>
         </div>
+        <!-- File selected preview -->
+        <div id="file-selected-info2" style="display:none;margin-top:8px;padding:8px 12px;background:#111;border:1px solid #2a2a2a;border-radius:2px;align-items:center;justify-content:space-between;gap:8px">
+          <span id="file-selected-name2" style="font-size:12px;color:#ccc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+          <span id="file-selected-size2" style="font-size:11px;color:#666;flex-shrink:0"></span>
+          <button onclick="clearSelectedFile()" style="background:none;border:none;color:#555;cursor:pointer;font-size:14px;flex-shrink:0;padding:0 4px" title="Clear">&#10005;</button>
+        </div>
         <input type="file" id="file-input2" accept="image/*,video/*" onchange="handleFile(this.files[0])">
         <div style="margin-top:10px;padding:10px 12px;background:#161616;border:1px solid #2a2a2a;border-radius:2px;display:flex;align-items:center;justify-content:space-between;gap:12px">
           <div style="display:flex;flex-direction:column;gap:2px">
@@ -312,6 +328,10 @@ canvas#admin-heatmap{width:100%;height:40px;display:block;border-radius:2px}
             </div>
             <span id="prem-switch-txt2" style="font-size:11px;color:#555;white-space:nowrap">Off</span>
           </label>
+        </div>
+        <!-- Upload button -->
+        <div id="upload-btn-wrap2" style="display:none;margin-top:10px">
+          <button class="btn btn-red" onclick="startUpload()" style="width:100%;padding:9px;font-size:13px">&#8679; Upload File</button>
         </div>
         <div id="prog-wrap2" style="display:none;margin-top:12px">
           <div class="prog-bar"><div class="prog-fill" id="prog-fill2" style="width:0%"></div></div>
@@ -609,6 +629,8 @@ async function doLogout() {
 }
 
 /* ─── UPLOAD ────────────────────────────────────────────────────────── */
+let pendingFile = null;
+
 function handleDrop(e) { e.preventDefault(); e.stopPropagation(); document.getElementById('upload-zone').classList.remove('drag'); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }
 function handleDrop2(e) { e.preventDefault(); e.stopPropagation(); document.getElementById('upload-zone2').classList.remove('drag'); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }
 
@@ -617,9 +639,44 @@ function handleFile(file) {
   if (!file) return;
   const allowed = ['image/jpeg','image/png','image/gif','image/webp','video/mp4','video/webm','video/ogg','video/quicktime'];
   if (!allowed.includes(file.type)) { toast('Invalid file type. Only images, GIFs and videos allowed.', 'err'); return; }
+
+  pendingFile = file;
   const isVid = file.type.startsWith('video/');
+
+  // Show file info strip
+  ['', '2'].forEach(sfx => {
+    const info = document.getElementById('file-selected-info' + sfx);
+    const nameEl = document.getElementById('file-selected-name' + sfx);
+    const sizeEl = document.getElementById('file-selected-size' + sfx);
+    const btnWrap = document.getElementById('upload-btn-wrap' + sfx);
+    if (info) { info.style.display = 'flex'; if (nameEl) nameEl.textContent = file.name; if (sizeEl) sizeEl.textContent = fmtBytes(file.size); }
+    if (btnWrap) btnWrap.style.display = 'block';
+  });
+
+  // Update premium toggles based on file type
   updatePremiumToggles(isVid);
-  doUpload(file);
+}
+
+function clearSelectedFile() {
+  pendingFile = null;
+  ['', '2'].forEach(sfx => {
+    const info = document.getElementById('file-selected-info' + sfx);
+    const btnWrap = document.getElementById('upload-btn-wrap' + sfx);
+    const fi = document.getElementById('file-input' + (sfx === '' ? '' : sfx));
+    if (info) info.style.display = 'none';
+    if (btnWrap) btnWrap.style.display = 'none';
+    if (fi) fi.value = '';
+  });
+  updatePremiumToggles(false);
+  // Reset premium checkboxes
+  const mp = document.getElementById('mark-premium'); if (mp) mp.checked = false;
+  const mp2 = document.getElementById('mark-premium2'); if (mp2) mp2.checked = false;
+  updatePremiumToggles(false);
+}
+
+function startUpload() {
+  if (!pendingFile) { toast('No file selected.', 'err'); return; }
+  doUpload(pendingFile);
 }
 
 function doUpload(file) {
@@ -631,6 +688,13 @@ function doUpload(file) {
   const pw2 = document.getElementById('prog-wrap2');
   const pf2 = document.getElementById('prog-fill2');
   const pt3 = document.getElementById('prog-text2');
+
+  // Hide upload buttons while uploading
+  ['', '2'].forEach(sfx => {
+    const bw = document.getElementById('upload-btn-wrap' + sfx);
+    if (bw) bw.style.display = 'none';
+  });
+
   ur.style.display = 'none';
   if (pw) pw.style.display = 'block';
   if (pw2) pw2.style.display = 'block';
@@ -669,16 +733,17 @@ function doUpload(file) {
         ur.style.display = 'block';
         document.getElementById('prem-warning').style.display = r.premium && cfgState.premiumEnabled ? 'block' : 'none';
         toast('Upload complete!', 'ok');
-        // Reset premium checkboxes and toggles
-        const mp3 = document.getElementById('mark-premium'); if (mp3) mp3.checked = false;
-        const mp4 = document.getElementById('mark-premium2'); if (mp4) mp4.checked = false;
-        updatePremiumToggles(false);
+        // Full reset
+        pendingFile = null;
+        clearSelectedFile();
         checkMe();
         loadRecentFiles();
         if (currentSection === 'myfiles') loadMyFiles();
       } else {
         const errs = { DAILY_LIMIT_EXCEEDED: 'Daily upload limit reached. Upgrade to VIP for more.', NO_FILE: 'No file selected.', INVALID_TYPE: 'File type not supported.' };
         toast(errs[r.error] || 'Upload failed: ' + r.error, 'err');
+        // Re-show upload button on failure
+        ['', '2'].forEach(sfx => { const bw = document.getElementById('upload-btn-wrap' + sfx); if (bw && pendingFile) bw.style.display = 'block'; });
       }
     } catch(e) { toast('Upload failed.', 'err'); }
   });
