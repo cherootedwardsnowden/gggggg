@@ -584,7 +584,28 @@ app.post("/api/video-token/:fid", authMW, (req, res) => {
 
 // ─── WATCH STATS ──────────────────────────────────────────────────────────────
 // Client reports which second it's currently playing
-app.post("/api/watch-stat", authMW, (req, res) => {
+app.post("/api/watch-stat", (req, res) => {
+  // Accept both cookie auth and video token auth
+  let username = null;
+
+  // Try cookie auth first
+  const cookieToken = req.cookies && req.cookies["_mu_sess"];
+  if (cookieToken) {
+    try {
+      const pl = jw.verify(cookieToken, JWT_SECRET);
+      const u = getUser(pl.username);
+      if (u) username = u.username;
+    } catch(e) {}
+  }
+
+  // Try video token from body
+  if (!username && req.body && req.body.vt) {
+    const td = videoTokens.get(req.body.vt);
+    if (td && td.expires > Date.now()) username = td.username;
+  }
+
+  if (!username) return res.status(401).json({ ok: false });
+
   const { fid, second } = req.body;
   if (!fid || second === undefined || isNaN(second)) return res.json({ ok: false });
   const sec = Math.floor(Number(second));
@@ -594,8 +615,8 @@ app.post("/api/watch-stat", authMW, (req, res) => {
   const ws = watchStats.get(fid);
 
   // Per-user tracking
-  if (!ws.byUser[req.user.username]) ws.byUser[req.user.username] = {};
-  ws.byUser[req.user.username][sec] = (ws.byUser[req.user.username][sec] || 0) + 1;
+  if (!ws.byUser[username]) ws.byUser[username] = {};
+  ws.byUser[username][sec] = (ws.byUser[username][sec] || 0) + 1;
 
   // Global heatmap
   ws.heatmap[sec] = (ws.heatmap[sec] || 0) + 1;
@@ -620,7 +641,14 @@ app.get("/api/admin/watch-stats-all", ownerMW, (req, res) => {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
       .map(([s, c]) => ({ second: parseInt(s), count: c }));
-    result.push({ fid, filename: fname, topSeconds, totalPlays: Object.values(ws.heatmap).reduce((a, b) => a + b, 0) });
+    result.push({
+      fid,
+      filename: fname,
+      topSeconds,
+      heatmap: ws.heatmap,
+      byUser: ws.byUser,
+      totalPlays: Object.values(ws.heatmap).reduce((a, b) => a + b, 0)
+    });
   }
   result.sort((a, b) => b.totalPlays - a.totalPlays);
   res.json({ ok: true, stats: result });
