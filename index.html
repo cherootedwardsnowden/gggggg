@@ -871,11 +871,11 @@ async function openFileModal(fid) {
 }
 
 async function initVideoPlayer(f, isPrem, canFull) {
-  // Get IP-locked token
   let videoSrc = `/f/${f.id}`;
+  let currentToken = null;
   try {
     const tr = await api('/api/video-token/' + f.id, { method: 'POST' });
-    if (tr.ok && tr.token) videoSrc = `/f/${f.id}?vt=${tr.token}`;
+    if (tr.ok && tr.token) { currentToken = tr.token; videoSrc = `/f/${f.id}?vt=${tr.token}`; }
   } catch(e) {}
 
   const videoEl = document.getElementById('vjs-player-' + f.id);
@@ -899,7 +899,9 @@ async function initVideoPlayer(f, isPrem, canFull) {
   watchStatInterval = setInterval(() => {
     if (!currentVjsPlayer || currentVjsPlayer.paused()) return;
     const sec = Math.floor(currentVjsPlayer.currentTime());
-    api('/api/watch-stat', { method: 'POST', body: { fid: f.id, second: sec } }).catch(() => {});
+    const body = { fid: f.id, second: sec };
+    if (currentToken) body.vt = currentToken;
+    api('/api/watch-stat', { method: 'POST', body }).catch(() => {});
   }, 2000);
 
   // Load heatmap for this video if admin
