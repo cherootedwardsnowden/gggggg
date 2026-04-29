@@ -871,12 +871,24 @@ async function openFileModal(fid) {
 }
 
 async function initVideoPlayer(f, isPrem, canFull) {
-  let videoSrc = `/f/${f.id}`;
   let currentToken = null;
+  let isPreview = false;
   try {
     const tr = await api('/api/video-token/' + f.id, { method: 'POST' });
-    if (tr.ok && tr.token) { currentToken = tr.token; videoSrc = `/f/${f.id}?vt=${tr.token}`; }
+    if (tr.ok && tr.token) {
+      currentToken = tr.token;
+      isPreview = !!tr.preview;
+    }
   } catch(e) {}
+
+  if (!currentToken) {
+    const videoEl = document.getElementById('vjs-player-' + f.id);
+    if (videoEl) videoEl.closest('.modal-media')?.insertAdjacentHTML('beforeend','<div style="color:#f55;padding:12px;text-align:center">Session error. Please refresh.</div>');
+    return;
+  }
+
+  // Build the src URL with token - this is the only valid way to stream
+  const videoSrc = `/f/${f.id}?vt=${currentToken}`;
 
   const videoEl = document.getElementById('vjs-player-' + f.id);
   if (!videoEl) return;
@@ -887,13 +899,47 @@ async function initVideoPlayer(f, isPrem, canFull) {
     controls: true,
     autoplay: false,
     muted: false,
-    preload: 'auto',
+    preload: 'metadata',
     sources: [{ src: videoSrc, type: f.mimetype }],
     controlBar: {
       volumePanel: { inline: true },
       pictureInPictureToggle: false
     }
   });
+
+  // ── 15-second client-side hard cutoff for preview users ──────────────────
+  if (isPreview) {
+    const PREVIEW_LIMIT = 15;
+    let overlayShown = false;
+
+    currentVjsPlayer.on('timeupdate', function() {
+      const t = this.currentTime();
+      if (t >= PREVIEW_LIMIT && !overlayShown) {
+        overlayShown = true;
+        this.pause();
+        // Remove controls to prevent seeking back
+        this.controls(false);
+        // Show upgrade overlay
+        const wrap = videoEl.closest('.modal-media') || videoEl.parentElement;
+        if (wrap && !wrap.querySelector('.preview-gate-overlay')) {
+          wrap.insertAdjacentHTML('beforeend', `
+            <div class="preview-gate-overlay" style="position:absolute;inset:0;background:rgba(0,0,0,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:99;border-radius:3px">
+              <div style="color:#f5a623;font-size:22px;margin-bottom:8px">&#9733; VIP Required</div>
+              <div style="color:#ccc;font-size:13px;margin-bottom:18px;text-align:center">Free preview ended (15 seconds).<br>Upgrade to VIP for unlimited access.</div>
+              <button class="btn btn-gold" onclick="showSection('vip');closeFileModal()">Get VIP Access</button>
+            </div>
+          `);
+        }
+      }
+    });
+
+    // Also prevent seeking past 15s
+    currentVjsPlayer.on('seeking', function() {
+      if (this.currentTime() > PREVIEW_LIMIT) {
+        this.currentTime(PREVIEW_LIMIT - 1);
+      }
+    });
+  }
 
   // Watch stat reporting every 2 seconds
   watchStatInterval = setInterval(() => {
