@@ -221,11 +221,18 @@ canvas#admin-heatmap{width:100%;height:40px;display:block;border-radius:2px}
               <small>Images, GIFs, Videos &#8226; Free: 30MB/day &#8226; VIP: 1GB/day</small>
             </div>
             <input type="file" id="file-input" accept="image/*,video/*" onchange="handleFile(this.files[0])">
-            <div id="premium-toggle-wrap" style="display:none;margin-top:10px;padding:8px 10px;background:#1a1000;border:1px solid #5a3a00;border-radius:2px">
-              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:#f5a623;font-size:12px">
-                <input type="checkbox" id="mark-premium" style="width:14px;height:14px;accent-color:#f5a623">
-                <span>&#9733; Mark as Premium</span>
-                <span style="color:#888;font-size:10px">(Video will be limited to 15s preview for non-VIP users)</span>
+            <!-- Premium toggle: always visible, disabled for non-video / when premium mode off -->
+            <div style="margin-top:10px;padding:10px 12px;background:#161616;border:1px solid #2a2a2a;border-radius:2px;display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <div style="display:flex;flex-direction:column;gap:2px">
+                <span style="color:#ccc;font-size:12px;font-weight:bold">&#9733; Mark as Premium</span>
+                <span id="prem-toggle-hint" style="color:#555;font-size:10px">Enable premium mode in config to use this feature</span>
+              </div>
+              <label id="prem-switch-label" style="display:flex;align-items:center;gap:8px;cursor:not-allowed;opacity:0.4" title="Premium mode must be enabled by admin">
+                <input type="checkbox" id="mark-premium" disabled style="display:none">
+                <div id="prem-switch" style="width:42px;height:22px;background:#222;border:1px solid #444;border-radius:11px;position:relative;transition:background .2s;flex-shrink:0">
+                  <div id="prem-switch-knob" style="position:absolute;top:3px;left:3px;width:14px;height:14px;background:#555;border-radius:50%;transition:left .2s,background .2s"></div>
+                </div>
+                <span id="prem-switch-txt" style="font-size:11px;color:#555;white-space:nowrap">Off</span>
               </label>
             </div>
             <div id="prog-wrap">
@@ -293,11 +300,17 @@ canvas#admin-heatmap{width:100%;height:40px;display:block;border-radius:2px}
           <small style="color:#555;display:block;margin-top:5px">Images, GIFs, Videos supported</small>
         </div>
         <input type="file" id="file-input2" accept="image/*,video/*" onchange="handleFile(this.files[0])">
-        <div id="premium-toggle-wrap2" style="display:none;margin-top:10px;padding:8px 10px;background:#1a1000;border:1px solid #5a3a00;border-radius:2px">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:#f5a623;font-size:12px">
-            <input type="checkbox" id="mark-premium2" style="width:14px;height:14px;accent-color:#f5a623">
-            <span>&#9733; Mark as Premium</span>
-            <span style="color:#888;font-size:10px">(Video limited to 15s for non-VIP)</span>
+        <div style="margin-top:10px;padding:10px 12px;background:#161616;border:1px solid #2a2a2a;border-radius:2px;display:flex;align-items:center;justify-content:space-between;gap:12px">
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <span style="color:#ccc;font-size:12px;font-weight:bold">&#9733; Mark as Premium</span>
+            <span id="prem-toggle-hint2" style="color:#555;font-size:10px">Enable premium mode in config to use this feature</span>
+          </div>
+          <label id="prem-switch-label2" style="display:flex;align-items:center;gap:8px;cursor:not-allowed;opacity:0.4" title="Premium mode must be enabled by admin">
+            <input type="checkbox" id="mark-premium2" disabled style="display:none">
+            <div id="prem-switch2" style="width:42px;height:22px;background:#222;border:1px solid #444;border-radius:11px;position:relative;transition:background .2s;flex-shrink:0">
+              <div id="prem-switch-knob2" style="position:absolute;top:3px;left:3px;width:14px;height:14px;background:#555;border-radius:50%;transition:left .2s,background .2s"></div>
+            </div>
+            <span id="prem-switch-txt2" style="font-size:11px;color:#555;white-space:nowrap">Off</span>
           </label>
         </div>
         <div id="prog-wrap2" style="display:none;margin-top:12px">
@@ -458,7 +471,70 @@ async function loadConfig() {
     const nb2 = document.getElementById('notice-premium');
     if (r.maintenance) nb.classList.add('show');
     if (r.premiumEnabled) nb2.classList.add('show');
+    updatePremiumToggles(false); // init both toggles
   } catch(e) {}
+}
+
+function updatePremiumToggles(isVideo) {
+  const canUse = cfgState.premiumEnabled && isVideo;
+  [
+    { sw: 'prem-switch', knob: 'prem-switch-knob', lbl: 'prem-switch-label', txt: 'prem-switch-txt', hint: 'prem-toggle-hint', cb: 'mark-premium' },
+    { sw: 'prem-switch2', knob: 'prem-switch-knob2', lbl: 'prem-switch-label2', txt: 'prem-switch-txt2', hint: 'prem-toggle-hint2', cb: 'mark-premium2' }
+  ].forEach(ids => {
+    const sw = document.getElementById(ids.sw);
+    const knob = document.getElementById(ids.knob);
+    const lbl = document.getElementById(ids.lbl);
+    const txt = document.getElementById(ids.txt);
+    const hint = document.getElementById(ids.hint);
+    const cb = document.getElementById(ids.cb);
+    if (!sw) return;
+
+    if (!cfgState.premiumEnabled) {
+      lbl.style.cursor = 'not-allowed'; lbl.style.opacity = '0.35'; lbl.title = 'Premium mode must be enabled by admin';
+      hint.textContent = 'Enable premium mode in config to use this feature'; hint.style.color = '#444';
+      if (cb) { cb.disabled = true; cb.checked = false; }
+      sw.style.background = '#222'; sw.style.borderColor = '#444';
+      knob.style.left = '3px'; knob.style.background = '#555';
+      txt.textContent = 'Off'; txt.style.color = '#555';
+      lbl.onclick = null;
+    } else if (!isVideo) {
+      lbl.style.cursor = 'not-allowed'; lbl.style.opacity = '0.4'; lbl.title = 'Only available for video files';
+      hint.textContent = 'Select a video file to enable this option'; hint.style.color = '#555';
+      if (cb) { cb.disabled = true; cb.checked = false; }
+      sw.style.background = '#222'; sw.style.borderColor = '#444';
+      knob.style.left = '3px'; knob.style.background = '#555';
+      txt.textContent = 'Off'; txt.style.color = '#555';
+      lbl.onclick = null;
+    } else {
+      // Fully enabled
+      lbl.style.cursor = 'pointer'; lbl.style.opacity = '1'; lbl.title = 'Mark this video as premium (non-VIP users see 15s preview)';
+      hint.textContent = 'Non-VIP users will only see a 15-second preview'; hint.style.color = '#888';
+      if (cb) cb.disabled = false;
+      const isOn = cb && cb.checked;
+      applyPremSwitch(ids, isOn);
+      lbl.onclick = () => {
+        if (!cb) return;
+        cb.checked = !cb.checked;
+        applyPremSwitch(ids, cb.checked);
+      };
+    }
+  });
+}
+
+function applyPremSwitch(ids, isOn) {
+  const sw = document.getElementById(ids.sw);
+  const knob = document.getElementById(ids.knob);
+  const txt = document.getElementById(ids.txt);
+  if (!sw) return;
+  if (isOn) {
+    sw.style.background = '#7a5500'; sw.style.borderColor = '#c08a00';
+    knob.style.left = '23px'; knob.style.background = '#f5a623';
+    txt.textContent = 'On'; txt.style.color = '#f5a623';
+  } else {
+    sw.style.background = '#1a1a00'; sw.style.borderColor = '#5a3a00';
+    knob.style.left = '3px'; knob.style.background = '#c08a00';
+    txt.textContent = 'Off'; txt.style.color = '#888';
+  }
 }
 
 function showUserInfo(u) {
@@ -542,11 +618,7 @@ function handleFile(file) {
   const allowed = ['image/jpeg','image/png','image/gif','image/webp','video/mp4','video/webm','video/ogg','video/quicktime'];
   if (!allowed.includes(file.type)) { toast('Invalid file type. Only images, GIFs and videos allowed.', 'err'); return; }
   const isVid = file.type.startsWith('video/');
-  // Show premium toggle only for videos when premium mode is active
-  const ptw = document.getElementById('premium-toggle-wrap');
-  const ptw2 = document.getElementById('premium-toggle-wrap2');
-  if (ptw) ptw.style.display = (isVid && cfgState.premiumEnabled) ? 'block' : 'none';
-  if (ptw2) ptw2.style.display = (isVid && cfgState.premiumEnabled) ? 'block' : 'none';
+  updatePremiumToggles(isVid);
   doUpload(file);
 }
 
@@ -597,11 +669,10 @@ function doUpload(file) {
         ur.style.display = 'block';
         document.getElementById('prem-warning').style.display = r.premium && cfgState.premiumEnabled ? 'block' : 'none';
         toast('Upload complete!', 'ok');
-        // Reset premium checkboxes
+        // Reset premium checkboxes and toggles
         const mp3 = document.getElementById('mark-premium'); if (mp3) mp3.checked = false;
         const mp4 = document.getElementById('mark-premium2'); if (mp4) mp4.checked = false;
-        const ptw3 = document.getElementById('premium-toggle-wrap'); if (ptw3) ptw3.style.display = 'none';
-        const ptw4 = document.getElementById('premium-toggle-wrap2'); if (ptw4) ptw4.style.display = 'none';
+        updatePremiumToggles(false);
         checkMe();
         loadRecentFiles();
         if (currentSection === 'myfiles') loadMyFiles();
